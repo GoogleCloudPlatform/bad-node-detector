@@ -50,7 +50,7 @@ See the [section below](#4-building-chs-from-src) for more details.
 
 The **[`docker/`](docker/)** directory contains the Dockerfiles that can be
 used with `src/` to build your own Docker images for CHS.
-***This is not necessary to run CHS.*** However, certain users might find it 
+***This is not necessary to run CHS.*** However, certain users might find it
 useful to customize their version of CHS.
 
 
@@ -58,7 +58,7 @@ useful to customize their version of CHS.
 
 CHS is broken up into the following parts:
 - Health Runner
-  * Manages how the health checks are launched on the nodes and then later 
+  * Manages how the health checks are launched on the nodes and then later
   cleaned up after completion
 - Health Checks
   * Kicked off by the Health Runner and run on the nodes in the cluster to
@@ -97,44 +97,61 @@ Health Runner's configuration.
 Runs on two nodes to check networking across these nodes.
 A 'pass' is given to both nodes when they have an average bandwidth that meets
 or exceeds a given threshold.
+Second-pass is enabled by default which runs the NCCL test for pairs of a
+healthy and unhealthy node after a first test.
+This helps reduce the number of false positives when only one node in a pair
+is unhealthy.
 
 The NCCL health check will pair nodes based on the parameter `PAIRING_MODE` in
 the health runner configuration.
+
 By default, NCCL health check runs in `random` pairing mode which runs the
 health checks between random pairs of nodes. These are the supported topological
 aware pairing modes:
 
-* Random Pairs (default) - `PAIRING_MODE: random`
-  - Ignores topology of cluster and randomly pairs nodes together
-  - When second pass is enabled (`SECOND_PASS_ENABLED: true`), a NCCL test
-    failure will proceed with another random pairing but this time using one
-    passed node and one failed node in each pair.
-* Intra Rack - `PAIRING_MODE: intra_rack`
-  - Checks the racks communication by running NCCL tests between each node in
-    the same rack.
-  - When second pass is enabled (`SECOND_PASS_ENABLED: true`), a NCCL test
-    failure will proceed with another pairing but this time using one passed
-    node and one failed node in each pair (within the rack).
-* Inter Rack -  `PAIRING_MODE: inter_rack`
-  - Checks inter-rack communication by running NCCL tests between nodes in
-    different racks. (The racks will be in the same cluster).
-  - When second pass is enabled (`SECOND_PASS_ENABLED: true`), a rack that
-    failed the first initial NCCL test will be randomly paired with a different
-    rack that previously passed.
-  - Note the nodes will still be labeled as pass/fail but only failed nodes in
-    a failed rack will be tested again if second pass is enabled.
-* Inter Cluster - `PAIRING_MODE: inter_cluster`
-  - Checks the inter-cluster communication by running NCCL tests between nodes
-    in different clusters.
-  - When second pass is enabled (`SECOND_PASS_ENABLED: true`), a cluster that
-    failed the first initial NCCL test will be randomly paired with a different
-    cluster that previously passed.
-  - Note the nodes will still be labeled as pass/fail but only failed nodes in
-    a failed cluster will be tested again if second pass is enabled.
+###### Random Pairs (default)
 
-Note that, for all pairing modes, second-pass is enabled by default which runs 
-the NCCL test for pairs of a healthy and unhealthy node. This reduces the 
-falsely tainted nodes.
+> Checks ***ALL*** nodes (marked to be tested) by running NCCL tests between
+> exhaustive random pairings of nodes.
+> (Topology is not considered.)
+
+To set:
+`PAIRING_MODE: random`
+
+Notes:
+- Ignores topology of cluster and randomly pairs nodes together
+- When second pass is enabled (`SECOND_PASS_ENABLED: true`), a NCCL test
+  failure will proceed with another random pairing but this time using one
+  passed node and one failed node in each pair.
+
+###### Intra Rack
+
+> Checks ***ALL*** nodes (marked to be tested) by running NCCL tests between
+> exhaustive random pairings of nodes that are in the same rack.
+
+To set:`PAIRING_MODE: intra_rack`
+
+Notes:
+- Checks the racks communication by running NCCL tests between nodes in
+  the same rack.
+- When second pass is enabled (`SECOND_PASS_ENABLED: true`), a NCCL test
+  failure will proceed with another pairing but this time using one passed
+  node and one failed node in each pair (still within the rack).
+
+###### Inter Cluster
+
+> Checks clusters by running NCCL tests between nodes (marked for testing) in
+> different clusters.
+
+To set: `PAIRING_MODE: inter_cluster`
+
+Notes:
+- When second pass is enabled (`SECOND_PASS_ENABLED: true`), a cluster that
+  failed the first initial NCCL test (that is a node pair failed between
+  different clusters) will be randomly paired with a different cluster
+  that previously passed (had no failed nodes in the cluster that were tested).
+- Note the nodes will still be labeled as pass/fail but only failed nodes in
+  a failed cluster will be tested again if second pass is enabled.
 
 
 ##### GPU Health Check
@@ -150,6 +167,60 @@ to report the health of a node.
 A 'pass' is given when the bandwidth across connections in the node meet or
 exceed a given threshold.
 
+##### Straggler Detection Health Check
+
+Runs a SendRecv test between all nodes in the cluster, providing a heatmap of
+the nodes' performance to aid in identifying stragglers.
+
+###### Parameters
+
+Straggler Detection Health Check takes the following parameters:
+
+  * `log_bucket`: (Required) The GCS bucket to store the logs and report results
+    through. This bucket should be in the same project, and region, as the
+    cluster.
+  * `straggler_threshold_ms`: The threshold in milliseconds for a node to be
+    considered a straggler. (Defaults to 8ms)
+  * `interesting_event_offset`: The number of events before & after the
+    straggler threshold to be considered interesting. (Defaults to 4)
+  * `message_sizes_mb`: The message sizes in MB to use for the SendRecv test.
+    (Defaults to 16,32)
+
+###### Understanding Results
+
+Viewing results is currently a manual process. First, you need to identify the 
+'ROOT_NODE' of the check - you can do this by running:
+
+```
+kubectl get pods
+```
+
+And identifying the pod with the "Straggler Detection" name that has the number '0' as it's identifier at the end of the name.
+
+From there, you can view the logs for that pod by running:
+
+```
+kubectl logs ${ROOT_NODE} -c straggler-detection-test -f
+```
+
+When the health check completes, it will print the link to your provided GCS bucket, which will contain the experiment results and heatmap.
+
+Unlike other health checks, Straggler Detection will not label nodes for you. Instead, it will report results to the provided log bucket as a textproto instance
+of PPBenchmarkResults. These results are then analyzed and reported as a
+heatmap to identify potential straggler nodes. See below for an example of
+the heatmap:
+
+![A sample annotated straggler detection heatmap](assets/straggler_heatmap_example.png)
+
+In this example, the heatmap shows the latency results of a SendRecv test -
+every row represents a node + GPU pair, and the column represents a specific
+SendRecv operation. The color is a gradient representing how close the event was
+to the straggler threshold (Dark red is over the threshold). In this image, GPU
+1 of Node 9 appears to be having some issues, as we can see the latency spike
+begins at that row, and spreads outward to the other nodes.
+
+If this pattern repeats (as it does in the image), GPU 1 of Node 9 is likely to
+be a straggler.
 
 ## 3. Running CHS
 
@@ -176,7 +247,7 @@ with expected values of `"true"`:
 - GPU Health Check: `aiinfra/nccl-healthcheck-test`
 - Neper Health Check: `aiinfra/neper-healthcheck-test`
 
-These label keys & values can be set using the `kubectl` tool 
+These label keys & values can be set using the `kubectl` tool
 using the following command:
 
 ```bash
@@ -216,7 +287,7 @@ to each health check though there are specific settings that apply to all
 health checks.
 
 Note in the section below we use the placeholder `HC_NAME` that would
-be replaced with an identifying name of a health check, such as 
+be replaced with an identifying name of a health check, such as
 `nccl_healthcheck`.
 
 ##### `health_checks.HC_NAME.run_check`
@@ -235,9 +306,9 @@ This section specifies information regarding the Docker image for health check.
 
 - `health_checks.HC_NAME.image.repo`:
   the base repo URL for the Docker image for the health check.
-- `health_checks.HC_NAME.image.tag`: 
+- `health_checks.HC_NAME.image.tag`:
   the image tag for the Docker image for the health check.
-- `health_checks.HC_NAME.image.pull_policy`: 
+- `health_checks.HC_NAME.image.pull_policy`:
   the pull policy for the Docker image for the health check.
 
 Example:
@@ -261,10 +332,11 @@ checks in parallel.
 - `health_checks.HC_NAME.blast_mode.blast_mode_enabled`:
   set to `"true"` or "false". If set to `"false"`, a failed health check will
   taint the corresponding node(s).
-- `health_checks.HC_NAME.blast_mode.BLAST_MODE_NUM_TESTS_LIMIT`: 
-  set to an integer specifying how many health checks can be launched simultaneously across the cluster.
-- `health_checks.HC_NAME.blast_mode.NODES_CHECKED_PER_TEST`: 
-  set to an integer to specify how many nodes are run for each test. NCCL & 
+- `health_checks.HC_NAME.blast_mode.BLAST_MODE_NUM_TESTS_LIMIT`:
+  set to an integer specifying how many health checks can be launched
+  simultaneously across the cluster.
+- `health_checks.HC_NAME.blast_mode.NODES_CHECKED_PER_TEST`:
+  set to an integer to specify how many nodes are run for each test. NCCL &
   neper health checks use 2 nodes while the GPU health check only uses 1.
 
 
@@ -276,7 +348,7 @@ Health Runner. Some settings are specific to the health check type but there
 are others that are universal to all health checks.
 
 
-###### Universal Health Check Settings 
+###### Universal Health Check Settings
 
 - `health_checks.HC_NAME.env.DRY_RUN`:
   this is either set to `"true"` or `"false"`. If set to `"false"`, if a health
@@ -299,7 +371,7 @@ are others that are universal to all health checks.
 
 ###### GPU Health Check Settings
 
-- `health_checks.HC_NAME.env.YAML_FILE`: 
+- `health_checks.HC_NAME.env.YAML_FILE`:
   must be set to `"gpu_healthcheck.yaml"`.
 - `health_checks.HC_NAME.env.R_LEVEL`:
   set to `1`, `2`, `3`, or `4` defining what level of diagnostics to run.
@@ -309,7 +381,7 @@ are others that are universal to all health checks.
 
 ###### Neper Health Check Settings
 
-- `health_checks.HC_NAME.env.YAML_FILE`: 
+- `health_checks.HC_NAME.env.YAML_FILE`:
   must be set to `"neper_healthcheck.yaml"`.
 
 
@@ -320,7 +392,7 @@ The default configuration is set so that the Health Runner will run only the
 NCCL health check every 5 minutes (10 health checks at a time) for A3+ GPU
 nodes.
 
-The default configuration for the Health Runner (found in the Helm chart 
+The default configuration for the Health Runner (found in the Helm chart
 [values.yaml](deploy/helm/health_runner/values.yaml) file) is shown below:
 
 ```yaml
@@ -395,7 +467,7 @@ Running CHS involves installing Health Runner.
 This is done on a Kubernetes orchestration by deploying the Helm chart for
 Health Runner.
 
-The Health Runner Helm chart can be used to install the release using the 
+The Health Runner Helm chart can be used to install the release using the
 `helm` command shown below:
 
 ```bash
@@ -469,7 +541,7 @@ changes.
 
 After deploying and running CHS, users may wish to clean up the installation.
 
-#### Uninstalling Health Runner Helm Release 
+#### Uninstalling Health Runner Helm Release
 
 To uninstall the Health Runner (a Helm release), use the release name
 (`RELEASE_NAME`) in the following command:
@@ -486,7 +558,7 @@ any lingering Jobs in the cluster that are not removed automatically.
 You can list these with a command like the following:
 
 ```bash
-kubectl get jobs | grep healthcheck
+kubectl get jobs | grep "chs-hc-"
 ```
 
 To remove lingering Jobs:
@@ -501,7 +573,7 @@ by name (such as `healthcheck` in this example) with something like below:
 ```bash
 # Gets list of jobs, filters for `healthcheck`, selects only the Job name
 kubectl get jobs \
-  | grep healthcheck \
+  | grep "chs-hc-" \
   | cut -d ' ' -f1
 ```
 
@@ -510,7 +582,7 @@ command below to delete those jobs:
 
 ```bash
 kubectl get jobs --no-headers \
-  | grep healthcheck \
+  | grep "chs-hc-" \
   | cut -d ' ' -f1 \
   | xargs kubectl delete jobs
 ```
@@ -544,14 +616,14 @@ This builds the image for the Health Runner and can be similarly done for each
 health check. It uses the code found in the [`src/`](src/) directory.
 
 After the images have been built and uploaded to a registry, the Helm chart for
-the Health Runner can be installed just as we saw in the 
+the Health Runner can be installed just as we saw in the
 ['Running CHS' section](#32-running-chs) but instead specifying the image repo
 and tag for the health check in the configuration.
 
 ### 4.1 Example Build
 
 The following is an example of how a user could build a Docker image, push that
-image to their registry, and then run Health Runner with that newly created 
+image to their registry, and then run Health Runner with that newly created
 image using the Helm chart we saw before:
 
 ```bash
@@ -568,7 +640,7 @@ docker build \
 
  docker push "${FULL_REPO_NAME}:${IMAGE_TAG}"
 
-MY_HEALTH_RUNNER_RELEASE_NAME="my-custom-hr" 
+MY_HEALTH_RUNNER_RELEASE_NAME="my-custom-hr"
 
 helm install "${MY_HEALTH_RUNNER_RELEASE_NAME}" \
   deploy/helm/health_runner \
@@ -632,7 +704,7 @@ kubectl get jobs
 > to filter the output of the above commands by piping the results with `grep`.
 >
 > For example, the following will get the list of Jobs that have the phrase
-> 'healthcheck': `kubectl get jobs | grep healthcheck`
+> 'healthcheck': `kubectl get jobs | grep "chs-hc-"`
 
 
 #### Remove old labels
@@ -702,7 +774,7 @@ You may also want to remove labels from all nodes in the cluster:
 kubectl label nodes --all LABEL_NAME-
 ```
 
-You can filter the command to apply only to certain nodes based on another 
+You can filter the command to apply only to certain nodes based on another
 label (`FILTER_LABEL`):
 
 ```bash
@@ -772,14 +844,14 @@ helm install MY_RELEASE CHS_CHART \
 > Some users may find it useful for their workflow to not use Helm to deploy
 > but still work with an equivalent YAML file.
 >
-> For details on how to generate a YAML file for Helm, see the section 
+> For details on how to generate a YAML file for Helm, see the section
 > ["Generating YAML from Helm"](#generating-yaml-from-helm)
 
 
 ### 5.3 Observations
 
 
-After deploying the CHS Health Runner, you may want to observe relevant 
+After deploying the CHS Health Runner, you may want to observe relevant
 information about the cluster's nodes.
 
 #### Use the `watch` command to get periodic updates
@@ -791,7 +863,7 @@ For example, the following command will display jobs that match 'healthcheck'
 every 10 seconds while highlighting the differences from each update:
 
 ```bash
-watch -n10 -d "kubectl get jobs | grep healthcheck"
+watch -n10 -d "kubectl get jobs | grep "chs-hc-""
 ```
 
 #### Displaying information about nodes
@@ -799,7 +871,7 @@ watch -n10 -d "kubectl get jobs | grep healthcheck"
 Since CHS uses node labels to update information about health checks for that
 node, it can be useful to print information about those nodes.
 
-We already saw how to get some information on nodes in the 
+We already saw how to get some information on nodes in the
 ['Identifying labels' section](#identifying-labels):
 
 ```bash
@@ -903,7 +975,7 @@ automatically.
 You can list these with the commands using `grep`:
 
 ```bash
-kubectl get jobs | grep healthcheck
+kubectl get jobs | grep "chs-hc-"
 ```
 
 To remove lingering Jobs:
@@ -918,7 +990,7 @@ name (like `healthcheck` in this example):
 ```bash
 # Gets list of jobs, filters for `healthcheck`, selects only the Job name
 kubectl get jobs \
-  | grep healthcheck \
+  | grep "chs-hc-" \
   | cut -d ' ' -f1
 ```
 
@@ -927,7 +999,7 @@ command to delete them:
 
 ```bash
 kubectl get jobs \
-  | grep healthcheck \
+  | grep "chs-hc-" \
   | cut -d ' ' -f1  \
   | xargs kubectl delete jobs
 ```

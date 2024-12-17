@@ -39,12 +39,16 @@ from google.protobuf import timestamp_pb2
 _SLEEP_TIME_MINUTES = os.environ.get("SLEEP_TIME_MINUTES", "20")
 _HELM = os.environ.get("HELM_PATH", "/usr/local/bin/helm")
 _KUBECTL = os.environ.get("KUBECTL_PATH", "/app/kubectl")
-_K_GPU_NODES_IN_CLUSTER_COMMAND = (
+_GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
+_K_NAME_GPU_NODES_IN_CLUSTER_COMMAND = (
     f"{_KUBECTL} get nodes -o jsonpath='{{range"
     ' .items[*]}{.metadata.name}{"\\n"}{end}\' | while read node; do'
     f" {_KUBECTL} get node $node -o"
     " jsonpath='{.status.capacity.nvidia\\.com/gpu}' | grep -q '[0-9]' &&"
-    " echo $node; done | wc -l"
+    " echo $node; done"
+)
+_K_NUM_GPU_NODES_IN_CLUSTER_COMMAND = (
+    _K_NAME_GPU_NODES_IN_CLUSTER_COMMAND + " | wc -l"
 )
 logging.root.setLevel(logging.INFO)
 
@@ -75,6 +79,13 @@ def run_health_app(health_app: str) -> None:
     return
 
   print(health_results)
+
+  # If GCS_BUCKET_NAME is set, upload the results to GCS.
+  if _GCS_BUCKET_NAME:
+    checker_common.upload_results_to_gcs(
+        bucket_name=_GCS_BUCKET_NAME,
+        health_results=health_results,
+    )
 
 
 def ensure_env_variables(required_envs: Iterable[str]) -> None:
@@ -110,7 +121,7 @@ def determine_test_iterations() -> int:
     logging.info("Running blast mode")
 
     get_nodes_output = checker_common.run_command(
-        _K_GPU_NODES_IN_CLUSTER_COMMAND
+        _K_NUM_GPU_NODES_IN_CLUSTER_COMMAND
     )
     num_nodes = int(get_nodes_output.stdout)
     nodes_per_test = int(os.environ.get("NODES_CHECKED_PER_TEST", "1"))
@@ -191,15 +202,38 @@ def run_health_check() -> None:
   # 
   helm_install_flags = os.environ.get("HELM_INSTALL_FLAGS")
   # 
-  helm_values = os.environ.get("HELM_VALUES")
+  helm_values: dict[str, str] = dict()
+
+  node_names = os.environ.get("HOSTS_CSV", "nil")
+  if node_names != "nil":
+    node_names = node_names.split(",")
+  else:
+    node_names = checker_common.run_command(
+        _K_NAME_GPU_NODES_IN_CLUSTER_COMMAND
+    ).stdout.strip().split("\n")
+
+  num_nodes = os.environ.get("N_NODES", "nil")
+  if num_nodes == "nil":
+    num_nodes = len(node_names)
+  else:
+    num_nodes = int(num_nodes)
+  node_names_csv = r"\,".join(node_names)
+
+  # Pass Node Names & Number of Nodes to all health checks
+  helm_values["health_check.env.HOSTS_CSV"] = f"\"{node_names_csv}\""
+  helm_values["health_check.env.N_NODES"] = str(num_nodes)
 
   # RUN HC
   for i in range(num_tests):
     # If Helm release name is not unique, it will not install the release
+    short_guid = str(uuid.uuid4())[:8]
     unique_release_name = os.environ.get(
         "HELM_RELEASE_NAME",
-        f"internal-health-check-{i}-{str(uuid.uuid4())[:8]}",
+        f"internal-chs-hc-{i}-{short_guid}",
     )
+    # Set the job name to a unique value following a specific pattern/format
+    # 
+    helm_values["job.name"] = f"chs-hc-{i}-{short_guid}"
 
     cleanup_functions.extend(
         checker_common.create_helm_release(

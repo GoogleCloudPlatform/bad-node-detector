@@ -1,0 +1,82 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+service:
+  prefix: "straggler-svc"
+job:
+  prefix: "straggler-healthcheck"
+
+# This is used to create a unique identifer
+node_match:
+  guid: "xkcd"
+  # check_time: "1590303600" # Will automatically be set if not given
+
+health_check:
+  name: "straggler-healthcheck"
+  image:
+    # TODO: b/381928394: Update to external image repo once this check is approved for launch
+    repo: "us-docker.pkg.dev/gce-ai-infra/health-check/straggler-healthcheck"
+    tag: "v4.1.1"
+    pull_policy: "Always"
+  params:
+    bm_wait_time: "60"
+    max_run_time: "900"
+    n_batch: 50
+    n_microbatch: 100
+    straggler_threshold_ms: 8
+    interesting_event_offset: 4
+    use_fastrak: true
+    debug: ""  # set "INFO" when debugging
+    debug_subsys: "INIT,GRAPH,ENV,TUNING"  # set "INIT,GRAPH,ENV,TUNING" when debugging
+    bidirectional: "false"
+    message_sizes_mb: "16,32"
+  test_label:
+    name: "aiinfra/straggler-healthcheck-test"
+    value: "true"
+  cluster:
+    gcloud_override: ""
+  rxdm:
+    image: "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/tcpgpudmarxd-dev"
+    tag: "v1.0.11"
+    flags: ["--num_hops=2", "--num_nics=8", "--uid= ", "--alsologtostderr"]
+  ncclPlugin:
+    image: "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/nccl-plugin-gpudirecttcpx-dev"
+    tag: "v1.0.5"
+    envs:
+      NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING: "0"
+      NCCL_FASTRAK_FLOWS_PER_GROUP: "2"
+      NCCL_FASTRAK_CTRL_DEV: "eth0"
+      NCCL_FASTRAK_IFNAME: "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8"
+      NCCL_FASTRAK_NUM_FLOWS: "2"
+      NCCL_FASTRAK_USE_SNAP: "1"
+      NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS: "600000"
+      NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL: "0"
+      NCCL_FASTRAK_USE_LLCM: "1"
+      NCCL_TUNER_CONFIG_PATH: "/usr/local/tcpxo/lib64/a3plus_tuner_config.textproto"
+      NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE: "/usr/local/tcpxo/lib64/a3plus_guest_config.textproto"
+      NCCL_SHIMNET_SHIM_LAYERS: nil
+      NCCL_LIB_DIR: "/usr/local/tcpxo/lib64"
+      NCCL_CROSS_NIC: "0"
+      NCCL_ALGO: "Ring,Tree"
+      NCCL_PROTO: "Simple"
+      NCCL_NET_GDR_LEVEL: "PIX"
+      NCCL_NVLS_ENABLE: "0"
+      NCCL_TUNER_PLUGIN: nil
+  env:
+    GOOD_THROUGHPUT: "70000000000"
+    HEALTH_VALIDITY_HOURS: "5"
+    DRY_RUN: "true"
+    HOSTS_CSV: nil  # Set by Health Runner
+    N_NODES: nil  # Set by Health Runner
+    GCS_BUCKET_NAME: ""  # Set by Health Runner

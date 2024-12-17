@@ -13,16 +13,21 @@
 # limitations under the License.
 
 # yamllint disable
-{{- $ds_create_name := printf "%s-%s" "health-runner-ds-create" .Values.health_runner.name -}}
----
-{{- range .Values.health_checks }}
+{{ $guid := default (lower (randAlphaNum 4)) .Values.health_runner.guid }}
+{{- $check_time := default (printf "%s" (now | unixEpoch)) .Values.health_runner.check_time -}}
+{{- $base_name := default "chs-hr" .Values.health_runner.base_name -}}
+{{- $unique_suffix := printf "%s-%s" $guid $check_time -}}
+{{- range $hc_name, $config := .Values.health_checks }}
 {{- if .run_check}}
+{{- $extra_info := printf "%s" $hc_name }}
+{{- $unique_name := printf "%s-%s-%s" $base_name $extra_info $unique_suffix | replace "_" "-"  }}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .runner_name }}
+  name: {{ $unique_name }}
   labels:
-    app: {{ .runner_name }}
+    app: {{ $unique_name }}
 spec:
   completions: 1
   parallelism: 1
@@ -35,9 +40,9 @@ spec:
         runAsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: {{ $ds_create_name }}
+      serviceAccountName: {{ $unique_name }}
       containers:
-      - name: {{ .runner_name | quote}}
+      - name: {{ $unique_name | quote}}
         image: "{{ .image.repo }}:{{ .image.tag }}"
         imagePullPolicy: {{ .image.pull_policy }}
         securityContext:
@@ -61,35 +66,35 @@ spec:
         {{- end }} # if .blast_mode.blast_mode_enabled
         {{- end }} # if .blast_mode scope
 ---
-{{- end }} # if .run_check
-{{- end }} # iteration over .Values.health_checks
 ## Below should be the same for all health checks
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $ds_create_name }}
+  name: {{ $unique_name }}
   namespace: default
 ---
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: {{ $ds_create_name }}
+  name: {{ $unique_name }}
 rules:
 - apiGroups: ["", "apps", "rbac.authorization.k8s.io", "batch"]
-  resources: ["daemonsets", "serviceaccounts", "clusterrolebindings", "clusterroles", "nodes", "jobs", "services", "secrets"]
+  resources: ["daemonsets", "serviceaccounts", "clusterrolebindings", "clusterroles", "nodes", "jobs", "pods", "services", "secrets"]
   verbs: ["list", "get", "create", "delete", "watch", "patch"]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: {{ $ds_create_name }}
+  name: {{ $unique_name }}
   namespace: default
 subjects:
 - kind: ServiceAccount
-  name: {{ $ds_create_name }}
+  name: {{ $unique_name }}
   namespace: default
 roleRef:
   kind: ClusterRole
-  name: {{ $ds_create_name }}
+  name: {{ $unique_name }}
   apiGroup: rbac.authorization.k8s.io
+{{- end }} # if .run_check
+{{- end }} # iteration over .Values.health_checks
 

@@ -14,19 +14,21 @@
 
 # 
 health_runner:
-  name: "health-runner"
+  base_name: "chs-hr"
+  # guid: "xckd"  # Can specify a GUID if desired. Otherwise, a random GUID will be generated.
+  # check_time: "1590303600"  # Will automatically be set if not given
+
 # Multiple health checks can be added below
 # Note that only NCCL health check (A3+) is enabled by default
 health_checks:
   nccl_healthcheck:
     run_check: true
-    runner_name: nccl-health-runner-a3plus
     image:
       repo: "us-docker.pkg.dev/gce-ai-infra/health-check/health-runner"
-      tag: "v4.1.0"
+      tag: "v4.1.1"
       pull_policy: "Always"
     env:
-      HC_IMAGE_TAG: "v4.1.0"
+      HC_IMAGE_TAG: "v4.1.1"
       DRY_RUN: "true"
       SLEEP_TIME_MINUTES: "30"
       FILTER_LABEL_NAME: "aiinfra/nccl-healthcheck-test"
@@ -45,13 +47,12 @@ health_checks:
         NODES_CHECKED_PER_TEST:  "2"
   gpu_healthcheck:
     run_check: false
-    runner_name: gpu-health-runner
     image:
       repo: "us-docker.pkg.dev/gce-ai-infra/health-check/health-runner"
-      tag: "v4.1.0"
+      tag: "v4.1.1"
       pull_policy: "Always"
     env:
-      HC_IMAGE_TAG: "v4.1.0"
+      HC_IMAGE_TAG: "v4.1.1"
       DRY_RUN: "true"
       SLEEP_TIME_MINUTES: "30"
       HELM_CHART: "/app/health_checks/gpu_healthcheck"  # Path to Helm chart in container
@@ -65,13 +66,12 @@ health_checks:
         NODES_CHECKED_PER_TEST:  "1"
   neper_healthcheck:
     run_check: false
-    runner_name: neper-health-runner
     image:
       repo: "us-docker.pkg.dev/gce-ai-infra/health-check/health-runner"
-      tag: "v4.1.0"
+      tag: "v4.1.1"
       pull_policy: "Always"
     env:
-      HC_IMAGE_TAG: "v4.1.0"
+      HC_IMAGE_TAG: "v4.1.1"
       DRY_RUN: "true"
       SLEEP_TIME_MINUTES: "30"
       HELM_CHART: "/app/health_checks/neper_healthcheck"  # Path to Helm chart in container
@@ -82,3 +82,21 @@ health_checks:
       env:
         # BLAST_MODE_NUM_TESTS_LIMIT: "200"  # Number of health checks to run in parallel
         NODES_CHECKED_PER_TEST:  "2"
+  straggler_healthcheck:
+    run_check: false
+    image:
+      repo: "us-docker.pkg.dev/gce-ai-infra/health-check/health-runner"
+      tag: "v4.1.1"
+      pull_policy: "Always"
+    env:
+      HC_IMAGE_TAG: "v4.1.1"
+      DRY_RUN: "true"
+      SLEEP_TIME_MINUTES: "30"
+      HELM_CHART: "/app/health_checks/straggler_healthcheck"  # Path to Helm chart in container
+      HELM_INSTALL_FLAGS: "--set health_check.image.tag=$HC_IMAGE_TAG"
+      ACCELERATOR_TYPE: "nvidia-h100-mega-80gb"
+      HOSTS_CSV: nil  # Allow health runner to identify the nodes
+      N_NODES: nil  # Default to run on all nodes in the cluster
+      GCS_BUCKET_NAME: "straggler-healthcheck-logs"
+    blast_mode:
+      blast_mode_enabled: false  # Defaults to run multiple health checks in parallel

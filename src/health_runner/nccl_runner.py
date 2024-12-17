@@ -107,7 +107,7 @@ def health_check_with_node_pairs(
   for node0, node1 in node_pairs:
     env_mappings_copy = copy.deepcopy(env_mappings)
     short_guid = str(uuid.uuid4())[:8]
-    unique_job_name = f"hc-{job_name_distinctor}-{short_guid}"
+    unique_job_name = f"chs-hc-{job_name_distinctor}-{short_guid}"
     env_mappings_copy["NODE0"] = node0
     env_mappings_copy["NODE1"] = node1
     env_mappings_copy["SHORT_GUID"] = short_guid

@@ -25,7 +25,10 @@ import tempfile
 import time
 from typing import Any, Dict
 import uuid
+from google.cloud import storage
+from google.protobuf import json_format
 from kubernetes.client.api import batch_v1_api
+import health_results_pb2
 
 _KUBECTL = os.environ.get("KUBECTL_PATH", "/app/kubectl")
 
@@ -228,7 +231,7 @@ def create_job_k8s(
     if _HELM_RELEASE_NAME:
       release_name = _HELM_RELEASE_NAME
     else:
-      release_name = f"internal-health-check-{job_name}"
+      release_name = f"internal-{job_name}"
 
     return create_helm_release(
         helm_path=_HELM,
@@ -413,6 +416,41 @@ def expand_template(
   with open(yaml_template, "r") as f:
     t = string.Template(f.read())
     return t.safe_substitute(default_mappings)
+
+
+def upload_results_to_gcs(
+    bucket_name: str,
+    health_results: health_results_pb2.HealthResults,
+) -> None:
+  """Uploads the health results proto to a GCS bucket."""
+  if not bucket_name:
+    logging.error("No GCS bucket specified.")
+    return
+
+  # If workflow_id is set, use it as the file postfix. Otherwise, use a random
+  # string.
+  if os.environ.get("WORKFLOW_ID"):
+    file_postfix = os.environ.get("WORKFLOW_ID")
+  else:
+    file_postfix = str(uuid.uuid4())[:8]
+
+  file_name = f"health_results_{file_postfix}.json"
+
+  storage_client = storage.Client()
+  bucket = storage_client.bucket(bucket_name)
+  blob = bucket.blob(file_name)
+
+  json_string = json_format.MessageToJson(
+      health_results, preserving_proto_field_name=True
+  )
+
+  try:
+    blob.upload_from_string(json_string, content_type="application/json")
+  except Exception as error:  # pylint: disable=broad-exception-caught
+    logging.exception("Failed to upload results to GCS (reason: %r).", error)
+    return
+
+  print(f"Uploaded results to gs://{bucket_name}/{file_name}")
 
 
 def sigterm_handler(signum: Any, frame: Any) -> None:

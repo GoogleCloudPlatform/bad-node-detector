@@ -27,6 +27,7 @@ RUN pip install kubernetes
 
 COPY src/gpu_healthcheck/dcgm.proto /app/
 RUN pip install grpcio-tools
+RUN pip install google-cloud-storage
 RUN python3 -m grpc_tools.protoc -I /app/ --python_out=. --pyi_out=. --grpc_python_out=. --experimental_editions /app/dcgm.proto
 
 COPY src/gpu_healthcheck/gpu_healthcheck.py .

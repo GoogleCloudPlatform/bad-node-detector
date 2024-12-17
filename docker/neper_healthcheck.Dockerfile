@@ -47,6 +47,8 @@ RUN mkdir /var/run/sshd && chmod 0755 /var/run/sshd &&\
 # Disable ssh login grace period to prevent race condition vulnerability
 RUN echo "LoginGraceTime 0" >> /etc/ssh/sshd_config
 
+RUN pip install google-cloud-storage
+
 COPY src/neper_healthcheck/neper_runner.py .
 COPY src/checker_common.py .
 

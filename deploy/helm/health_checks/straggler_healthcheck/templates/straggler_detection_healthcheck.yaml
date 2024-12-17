@@ -1,0 +1,327 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# yamllint disable
+{{$image_version := $.Values.imageVersion}}
+{{$timestamp := now | date "2006-01-02-150405"}}
+{{- $check_time := default (printf "%s" (now | unixEpoch)) $.Values.node_match.check_time -}}
+{{- $health_check_uniq_str := printf "%s-%s" (toString $.Values.node_match.guid) (toString $check_time) -}}
+{{- $health_check_job_name := printf "%s-%s" $.Values.job.prefix $health_check_uniq_str -}}
+{{- $node_list_name := printf "%s-%s" "straggler-node-list" $health_check_uniq_str -}}
+{{- $expiry_time := int (sub  $check_time (mul .Values.health_check.env.HEALTH_VALIDITY_HOURS 60 60)) -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "sd-leader-{{$.Release.Name}}-{{$timestamp}}"
+spec:
+  selector:
+    name: "sd-leader-{{$.Release.Name}}-{{$timestamp}}"
+  clusterIP: None
+  ports:
+  - name: sd-leader
+    port: 2379
+---
+{{$node_count := $.Values.health_check.env.N_NODES | int}}
+{{- $root := . -}}
+{{range $node_index, $element := until $node_count}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sd-{{$.Release.Name}}-{{$timestamp}}-{{$node_index}}
+  namespace: default
+spec:
+  completions: 1
+  parallelism: 1
+  completionMode: Indexed
+  template:
+    metadata:
+      labels:
+        {{if ne $node_index 0}}
+          name: sd-{{$.Release.Name}}-{{$timestamp}}
+        {{end}}
+        {{if eq $node_index 0}}
+          name: sd-leader-{{$.Release.Name}}-{{$timestamp}}
+        {{end}}
+    spec:
+      serviceAccountName: {{ $node_list_name }}
+      restartPolicy: Never
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      hostname: sd-{{$.Release.Name}}-{{$timestamp}}-{{$node_index}}
+      {{if ne $node_index 0}}
+      subdomain: sd-{{$.Release.Name}}-{{$timestamp}}
+      {{end}}
+      {{if eq $node_index 0}}
+      subdomain: sd-leader-{{$.Release.Name}}-{{$timestamp}}
+      {{end}}
+      {{if $.Values.health_check.params.nodesPerSuperblock}}
+      {{$superblock_number :=  div $node_index $.Values.health_check.params.nodesPerSuperblock | int}}
+      nodeSelector:
+        superblock: "{{$superblock_number}}"
+      {{end}}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: cloud.google.com/gke-accelerator
+                operator: Exists
+                # It will trigger if label value is older than 24 hours (default) ago
+                # or label does not exists.
+              - key: aiinfra/straggler-healthcheck-runtime-sec
+                operator: Lt
+                values:
+                - "{{$expiry_time}}"
+              - key: aiinfra/node-not-ready
+                operator: DoesNotExist
+              # If label is true then it will trigger
+              - key: {{ $.Values.health_check.test_label.name | quote }}
+                operator: In
+                values:
+                - {{ $.Values.health_check.test_label.value | quote }}
+            - matchExpressions:
+              - key: cloud.google.com/gke-accelerator
+                operator: Exists
+              - key: aiinfra/straggler-healthcheck-runtime-sec
+                operator: DoesNotExist
+              - key: aiinfra/node-not-ready
+                operator: DoesNotExist
+              # If label is true then it will trigger
+              - key: {{ $.Values.health_check.test_label.name | quote }}
+                operator: In
+                values:
+                - {{ $.Values.health_check.test_label.value | quote }}
+          # prefer rule with higher weight
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: aiinfra/straggler-healthcheck-runtime-sec
+                operator: DoesNotExist
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: aiinfra/straggler-healthcheck-runtime-sec
+                operator: Lt
+                values:
+                - "{{ $expiry_time }}"
+      tolerations:
+      - operator: "Exists"
+      volumes:
+      - name: nvidia-install-dir-host
+        hostPath:
+          path: /home/kubernetes/bin/nvidia/lib64
+      - name: shared-memory
+        emptyDir:
+          medium: "Memory"
+          sizeLimit: 200Gi
+      - name: tcpxo-socket
+        hostPath:
+          path: /run/tcpxo
+      - name: var-lib
+        hostPath:
+          path: /var/lib
+      - name: library-dir-host
+        hostPath:
+          path: /home/kubernetes/bin
+      - name: tcpxo-host-volume
+        emptyDir: {}
+      - name: tcpxo-var-volume
+        hostPath:
+          path: /var/lib/tcpxo/lib64
+      - name: workload-terminated-volume
+        emptyDir: {}
+      initContainers:
+      - image: "ubuntu"
+        name: pre-installation
+        securityContext:
+          privileged: true
+        command:
+        - nsenter
+        - -at
+        - '1'
+        - --
+        - sh
+        - -c
+        - apt-get update && apt-get install --yes --no-install-recommends iptables && /sbin/iptables -I INPUT -p tcp -m tcp -j ACCEPT
+      {{if $.Values.health_check.params.use_fastrak}}
+      - name: tcpxo-nccl-plugin-installer
+        image: {{ $.Values.health_check.ncclPlugin.image }}:{{ $.Values.health_check.ncclPlugin.tag }}
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: var-lib
+          mountPath: /var/lib
+        - name: library-dir-host
+          mountPath: /usr/local
+        resources:
+          requests:
+            cpu: 150m
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -ex
+            chmod 755 /scripts/container_entry.sh
+            /scripts/container_entry.sh install --install-nccl
+            mkdir -p /usr/local/nvidia/lib64
+            cp -r /var/lib/tcpxo/lib64/. /usr/local/nvidia/lib64
+            echo " installation finishes"
+      containers:
+      - name: tcpd-daemon
+        image: {{ $.Values.health_check.rxdm.image }}:{{ $.Values.health_check.rxdm.tag }}
+        imagePullPolicy: Always
+        command:
+        - "bash"
+        - "-c"
+        - |
+          set -ex
+          chmod 755 /fts/entrypoint_rxdm_container.sh
+          /fts/entrypoint_rxdm_container.sh --num_hops=2 --num_nics=8  --uid= --alsologtostderr &
+          while [ ! -e "/usr/share/nemo/workload_terminated" ]; do sleep 10; done
+          pkill -e "^"tcpgpudmarxd || true
+          sleep 30
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - SYS_ADMIN
+              - SYS_PTRACE
+              - IPC_LOCK
+        volumeMounts:
+        - name: nvidia-install-dir-host
+          mountPath: /usr/local/nvidia/lib64
+        - name: tcpxo-var-volume
+          mountPath: /usr/local/fastrak/lib64
+        - name: tcpxo-socket
+          mountPath: /tmp
+        - name: workload-terminated-volume
+          mountPath: /usr/share/nemo
+        env:
+        - name: LD_LIBRARY_PATH
+          value: /usr/local/fastrak/lib64:/usr/local/nvidia/lib64
+      {{end}}
+      - name: straggler-detection-test
+        image: {{ $.Values.health_check.image.repo }}:{{ $.Values.health_check.image.tag }}
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - SYS_ADMIN
+              - SYS_PTRACE
+              - IPC_LOCK
+              {{if $.Values.health_check.params.use_fastrak}}
+              - NET_ADMIN
+              {{end}}
+        env:
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: NODE_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+          {{if $.Values.health_check.params.use_fastrak}}
+          {{range $key, $value := $.Values.health_check.ncclPlugin.envs}}
+          - name: {{ $key }}
+            value: "{{ $value }}"
+          {{end}}
+          {{end}}
+          {{- range $key, $value := $.Values.health_check.env }}
+          - name: {{ $key | quote }}
+            value: {{ $value | quote }}
+          {{- end }} {{- /* end iteration over .env */}}
+          - name: NCCL_DEBUG
+            value: "{{$.Values.health_check.params.debug}}"
+          - name: NCCL_DEBUG_SUBSYS
+            value: "{{$.Values.health_check.params.debug_subsys}}"
+          - name: GCS_BUCKET
+            value: "{{$.Values.health_check.env.GCS_BUCKET_NAME}}"
+          - name: NODE_RANK
+            value: "{{ $node_index }}"
+          - name: CONTROLLER_ADDR
+            value: "sd-leader-{{$.Release.Name}}-{{$timestamp}}"
+          - name: BM_WAIT_TIME
+            value: "{{ $.Values.health_check.params.bm_wait_time }}"
+          - name: JOB_TIMESTAMP
+            value: "{{ $timestamp }}"
+          - name: USE_FASTRAK
+            value: "{{ $.Values.health_check.params.use_fastrak }}"
+          {{if $.Values.health_check.params.use_fastrak}}
+          - name: LD_LIBRARY_PATH
+            value: /usr/local/nvidia/lib64:/usr/local/fastrak/lib64
+          {{end}}
+          - name: BIDIRECTIONAL
+            value: "{{$root.Values.health_check.params.bidirectional}}"
+          - name: MESSAGE_SIZES_MB
+            value: "{{$root.Values.health_check.params.message_sizes_mb}}"
+          - name: N_BATCH
+            value: "{{$root.Values.health_check.params.n_batch}}"
+          - name: N_MICROBATCH
+            value: "{{$root.Values.health_check.params.n_microbatch}}"
+          {{if eq $node_index 0}}
+          - name: "HOSTS_CSV"
+            value: {{ $.Values.health_check.params.hosts_csv | quote }}
+          - name: STRAGGLER_THRESHOLD_MS
+            value: "{{ $.Values.health_check.params.straggler_threshold_ms }}"
+          - name: INTERESTING_EVENT_OFFSET
+            value: "{{ $.Values.health_check.params.interesting_event_offset }}"
+          {{end}}
+        volumeMounts:
+          - name: nvidia-install-dir-host
+            mountPath: /usr/local/nvidia/lib64
+          {{if $.Values.health_check.params.use_fastrak }}
+          - name: tcpxo-host-volume
+            mountPath: /usr/local/fastrak/lib64
+          - name: tcpxo-socket
+            mountPath: /tmp
+          {{end}}
+          - name: shared-memory
+            mountPath: /dev/shm
+          - name: workload-terminated-volume
+            mountPath: /usr/share/nemo
+        resources:
+          limits:
+            nvidia.com/gpu: !!int 8
+---
+{{end}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $node_list_name }}
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $node_list_name }}
+rules:
+- apiGroups: ["", "apps", "rbac.authorization.k8s.io", "batch"]
+  resources: ["daemonsets", "serviceaccounts", "clusterrolebindings", "clusterroles", "nodes", "jobs", "pods", "services"]
+  verbs: ["list", "get", "create", "delete", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $node_list_name }}
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: {{ $node_list_name }}
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: {{ $node_list_name }}
+  apiGroup: rbac.authorization.k8s.io

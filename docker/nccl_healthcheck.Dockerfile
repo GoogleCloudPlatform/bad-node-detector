@@ -38,6 +38,7 @@ RUN apt-get update && \
 COPY src/nccl_healthcheck/config.proto /scripts/
 RUN pip install grpcio-tools
 RUN pip install kubernetes
+RUN pip install google-cloud-storage
 RUN python3 -m grpc_tools.protoc -I /scripts/ --python_out=. --pyi_out=. --grpc_python_out=. --experimental_editions /scripts/config.proto
 
 COPY src/nccl_healthcheck/nccl_startup.py /scripts/

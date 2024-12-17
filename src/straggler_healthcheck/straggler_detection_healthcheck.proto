@@ -1,0 +1,52 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Intermediary data structure for Straggler Detection healthcheck.
+edition = "2023";
+
+package cloud_cluster_supercomputer_validation_bad_node_detectors_straggler_healthcheck;
+
+
+
+option java_multiple_files = true;
+
+// Result of a single Pipeline Parallelism Benchmark operation.
+message PPBenchmarkResult {
+  int64 batch_id = 1;
+  int64 microbatch_id = 2;
+  int64 barrier_time_ns = 3;
+  int64 t0_ns = 4;
+  int64 t1_ns = 5;
+  int64 t2_ns = 6;
+  int64 t3_ns = 7;
+}
+
+// Metadata associated with a Pipeline Parallelism Benchmark run.
+message Metadata {
+  string hostname = 1;
+  int64 rank = 2;
+  int64 prev_rank = 3;
+  int64 next_rank = 4;
+  int64 node_id = 5;
+  int64 gpu_id = 6;
+  int64 n_batch = 7;
+  int64 n_microbatch = 8;
+  int64 msg_size_mb = 9;
+}
+
+// Results of a Pipeline Parallelism Benchmark run.
+message PPBenchmarkResults {
+  Metadata metadata = 1;
+  repeated PPBenchmarkResult benchmark_results = 2;
+}
